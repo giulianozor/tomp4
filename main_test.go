@@ -128,7 +128,7 @@ func TestFindVideoFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entries := findVideoFiles(srcDir, dstDir)
+	entries := findVideoFiles(srcDir, dstDir, true)
 
 	got := make(map[string]bool)
 	for _, e := range entries {
@@ -165,7 +165,7 @@ func TestFindVideoFilesNoVideoFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entries := findVideoFiles(srcDir, dstDir)
+	entries := findVideoFiles(srcDir, dstDir, false)
 	if len(entries) != 0 {
 		t.Errorf("expected 0 entries, got %d", len(entries))
 	}
@@ -185,7 +185,58 @@ func TestFindVideoFilesExcludesDstDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entries := findVideoFiles(srcDir, dstDir)
+	entries := findVideoFiles(srcDir, dstDir, true)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	if entries[0].Name != "movie.mkv" {
+		t.Errorf("expected movie.mkv, got %s", entries[0].Name)
+	}
+}
+
+func TestFindVideoFilesNonRecursive(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := filepath.Join(srcDir, "out")
+
+	files := []string{
+		"top.mp4",
+		"nested/video.mkv",
+	}
+	for _, f := range files {
+		path := filepath.Join(srcDir, f)
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("fake"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	entries := findVideoFiles(srcDir, dstDir, false)
+
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry (only top-level), got %d", len(entries))
+	}
+	if entries[0].Name != "top.mp4" {
+		t.Errorf("expected top.mp4, got %s", entries[0].Name)
+	}
+}
+
+func TestFindVideoFilesNonRecursiveExcludesDstDir(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := filepath.Join(srcDir, "out")
+	if err := os.MkdirAll(dstDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(srcDir, "movie.mkv"), []byte("fake"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dstDir, "movie.mp4"), []byte("fake"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	entries := findVideoFiles(srcDir, dstDir, false)
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(entries))
 	}

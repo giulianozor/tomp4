@@ -76,6 +76,7 @@ func main() {
 	dryRun := flag.Bool("n", false, "dry run: show ffmpeg commands without converting")
 	info := flag.Bool("i", false, "show table of sources, codecs, and actions, then exit")
 	yes := flag.Bool("y", false, "skip confirmation prompt")
+	recursive := flag.Bool("r", false, "recursively scan source directory")
 	flag.Parse()
 
 	signalCh := make(chan os.Signal, 1)
@@ -127,7 +128,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	entries := findVideoFiles(srcDir, dstDir)
+	entries := findVideoFiles(srcDir, dstDir, *recursive)
 	if len(entries) == 0 {
 		fmt.Println("No video files found.")
 		return
@@ -168,6 +169,7 @@ func main() {
 		fmt.Printf("Destination: %s\n", dstDir)
 		fmt.Printf("Keep:        %t\n", *keep)
 		fmt.Printf("QSV:         %t\n", *qsv)
+		fmt.Printf("Recursive:   %t\n", *recursive)
 		fmt.Printf("Total:       %d\n", len(entries))
 		if alreadyValid > 0 {
 			fmt.Printf("Valid:       %d\n", alreadyValid)
@@ -240,15 +242,18 @@ func calcNameWidth(total int) int {
 	return nw
 }
 
-func findVideoFiles(srcDir, dstDir string) []*fileEntry {
+func findVideoFiles(srcDir, dstDir string, recursive bool) []*fileEntry {
 	var entries []*fileEntry
-	if err := filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+	walkFn := func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: error accessing %s: %v\n", path, err)
 			return nil
 		}
 		if info.IsDir() {
 			if path == dstDir {
+				return filepath.SkipDir
+			}
+			if !recursive && path != srcDir {
 				return filepath.SkipDir
 			}
 			return nil
@@ -263,7 +268,8 @@ func findVideoFiles(srcDir, dstDir string) []*fileEntry {
 			})
 		}
 		return nil
-	}); err != nil {
+	}
+	if err := filepath.Walk(srcDir, walkFn); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: error walking source directory: %v\n", err)
 	}
 	return entries

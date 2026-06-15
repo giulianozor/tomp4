@@ -4,7 +4,7 @@ Batch convert video files to MP4 (H.264/AAC) using ffmpeg.
 
 ## Features
 
-- Recursively scans a directory for video files (mp4, avi, mkv, mov, wmv, flv, webm, m4v, ts, mts, m2ts, 3gp, ogv)
+- Scans a directory for video files (mp4, avi, mkv, mov, wmv, flv, webm, m4v, ts, mts, m2ts, 3gp, ogv) — optionally recursive with `-r`
 - Skips files already in valid MP4/H.264 format
 - Preserves compatible audio (AAC, AC3) and subtitle streams
 - Re-encodes incompatible audio to AAC
@@ -45,6 +45,7 @@ tomp4 [flags]
 | `-qsv` | `false` | Enable QSV (Quick Sync Video) encoder |
 | `-n` | `false` | Dry run: show ffmpeg commands without converting |
 | `-i` | `false` | Show table of sources, codecs, and actions, then exit |
+| `-r` | `false` | Recursively scan subdirectories | 
 | `-y` | `false` | Skip confirmation prompt |
 
 ### Examples
@@ -64,6 +65,9 @@ tomp4 -i
 
 # Use QSV hardware encoding, keep originals
 tomp4 -qsv -k
+
+# Recursively scan subdirectories
+tomp4 -r
 ```
 
 ## How it works
