@@ -13,6 +13,8 @@ Batch convert video files to MP4 (H.264/AAC) using ffmpeg.
 - Info mode to show codecs and actions without converting
 - QSV hardware acceleration support
 - Graceful interrupt handling (SIGINT/SIGTERM)
+- Clean source files whose output already exists (`-c`)
+- Move already-valid files from source to output (`-m`)
 
 ## Requirements
 
@@ -45,8 +47,10 @@ tomp4 [flags]
 | `-qsv` | `false` | Enable QSV (Quick Sync Video) encoder |
 | `-n` | `false` | Dry run: show ffmpeg commands without converting |
 | `-i` | `false` | Show table of sources, codecs, and actions, then exit |
-| `-r` | `false` | Recursively scan subdirectories | 
+| `-r` | `false` | Recursively scan subdirectories |
 | `-y` | `false` | Skip confirmation prompt |
+| `-c` | `false` | Remove source files that already have a corresponding output file |
+| `-m` | `false` | Move valid files from source to output directory |
 
 ### Examples
 
@@ -68,6 +72,12 @@ tomp4 -qsv -k
 
 # Recursively scan subdirectories
 tomp4 -r
+
+# Remove source files that already have an output
+tomp4 -c
+
+# Move already-valid files to output directory
+tomp4 -m
 ```
 
 ## How it works
@@ -81,3 +91,6 @@ For each video file found:
    - Subtitles: stream-copied
    - Metadata and chapters are preserved
 4. On success, the original is removed (unless `-k` is set)
+5. On failure, the partial output file is deleted
+6. With `-c`, source files whose `.mp4` output already exists are removed before any conversion
+7. With `-m`, files already in valid MP4 format are moved (renamed) to the output directory instead of being skipped

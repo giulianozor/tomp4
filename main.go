@@ -77,6 +77,8 @@ func main() {
 	info := flag.Bool("i", false, "show table of sources, codecs, and actions, then exit")
 	yes := flag.Bool("y", false, "skip confirmation prompt")
 	recursive := flag.Bool("r", false, "recursively scan source directory")
+	clean := flag.Bool("c", false, "remove source files that already have a corresponding output file")
+	move := flag.Bool("m", false, "move valid files from source to output directory")
 	flag.Parse()
 
 	signalCh := make(chan os.Signal, 1)
@@ -132,6 +134,26 @@ func main() {
 	if len(entries) == 0 {
 		fmt.Println("No video files found.")
 		return
+	}
+
+	if *clean {
+		var remaining []*fileEntry
+		for _, e := range entries {
+			outName := strings.TrimSuffix(e.Name, filepath.Ext(e.Name)) + ".mp4"
+			outPath := filepath.Join(dstDir, outName)
+			if _, err := os.Stat(outPath); err == nil {
+				if err := os.Remove(e.Path); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: failed to remove %s: %v\n", e.Path, err)
+				}
+			} else {
+				remaining = append(remaining, e)
+			}
+		}
+		entries = remaining
+		if len(entries) == 0 {
+			fmt.Println("No video files found.")
+			return
+		}
 	}
 
 	for _, e := range entries {
@@ -208,7 +230,7 @@ func main() {
 		if interrupted.Load() {
 			break
 		}
-		processFile(c.entry, c.action, c.outPath, entries, *keep, nameWidth, tableLines)
+		processFile(c.entry, c.action, c.outPath, entries, *keep, *move, nameWidth, tableLines)
 	}
 
 	if !useANSI {
@@ -485,8 +507,22 @@ func printDryRun(acs []actionCache, nameWidth int) {
 	})
 }
 
-func processFile(e *fileEntry, a action, outPath string, entries []*fileEntry, keep bool, nameWidth, tableLines int) {
+func processFile(e *fileEntry, a action, outPath string, entries []*fileEntry, keep, move bool, nameWidth, tableLines int) {
 	if a.skip {
+		if move {
+			if _, err := os.Stat(outPath); os.IsNotExist(err) {
+				if err := os.Rename(e.Path, outPath); err == nil {
+					e.Status = "Moved"
+					e.Speed = "  --  "
+					e.Time = "  --  "
+					e.Progress = "  --  "
+					updateTable(entries, nameWidth, tableLines)
+					printFileStatus(e)
+					return
+				}
+				fmt.Fprintf(os.Stderr, "warning: failed to move %s: %v\n", e.Path, err)
+			}
+		}
 		e.Status = "Skipped"
 		e.Speed = "  --  "
 		e.Time = "  --  "
@@ -665,6 +701,11 @@ func processFile(e *fileEntry, a action, outPath string, entries []*fileEntry, k
 		return
 	}
 
+	if _, err := os.Stat(outPath); err == nil {
+		if err := os.Remove(outPath); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to remove output %s: %v\n", outPath, err)
+		}
+	}
 	e.Status = "Failed"
 	e.Progress = " ERR "
 	e.Speed = "  --  "
