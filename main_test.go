@@ -120,6 +120,11 @@ func TestFindVideoFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// zero-byte video file should be skipped
+	emptyPath := filepath.Join(srcDir, "empty.mp4")
+	if err := os.WriteFile(emptyPath, []byte{}, 0644); err != nil {
+		t.Fatal(err)
+	}
 	// also create a file inside the dst dir that should be excluded
 	if err := os.MkdirAll(dstDir, 0755); err != nil {
 		t.Fatal(err)
@@ -150,6 +155,15 @@ func TestFindVideoFiles(t *testing.T) {
 	}
 	if got["excluded.mp4"] {
 		t.Error("excluded.mp4 from dst dir should not be in results")
+	}
+	if got["empty.mp4"] {
+		t.Error("empty.mp4 (0-byte) should not be in results")
+	}
+
+	for _, e := range entries {
+		if e.Size == 0 {
+			t.Errorf("entry %q has size 0, should have been skipped", e.Name)
+		}
 	}
 
 	if len(entries) != len(expected) {

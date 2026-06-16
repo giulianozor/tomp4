@@ -281,7 +281,7 @@ func findVideoFiles(srcDir, dstDir string, recursive bool) []*fileEntry {
 			return nil
 		}
 		ext := strings.ToLower(filepath.Ext(path))
-		if videoExts[ext] {
+		if videoExts[ext] && info.Size() > 0 {
 			entries = append(entries, &fileEntry{
 				Path:   path,
 				Name:   info.Name(),
