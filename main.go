@@ -51,7 +51,7 @@ var (
 var (
 	videoExts   = map[string]bool{
 		".mp4": true, ".avi": true, ".mkv": true, ".mov": true,
-		".wmv": true, ".snd": true, ".rmvb": true, ".flv": true, ".webm": true, ".m4v": true,
+		".wmv": true, ".snd": true, ".rm": true, ".rmvb": true, ".flv": true, ".webm": true, ".m4v": true,
 		".mpg": true, ".mpeg": true,
 		".ts": true, ".mts": true, ".m2ts": true, ".3gp": true,
 		".ogv": true,
