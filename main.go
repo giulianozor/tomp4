@@ -242,7 +242,7 @@ func main() {
 	fmt.Println()
 }
 
-const fixedTableOverhead = 58 // fixed col widths (11+8+10+12+6) + #/File padding (4) + border chars (7)
+const fixedTableOverhead = 59 // fixed col widths (11+8+10+12+6) + #/File padding (4) + border chars (8)
 
 func calcNameWidth(total int) int {
 	numW := digits(total)*2 + 1
@@ -460,12 +460,12 @@ func actionTable(acs []actionCache, nameWidth int, afterRow func(actionCache)) {
 
 	for i, c := range acs {
 		name := c.entry.Name
-		if len(name) > w {
-			name = name[:w-3] + "..."
+		if displayWidth(name) > w {
+			name = truncateDisplay(name, w-3) + "..."
 		}
-		fmt.Printf("│ %-*s │ %-*s │ %-*s │ %-*s │ %-26s │\n",
+		fmt.Printf("│ %-*s │ %s │ %-*s │ %-*s │ %-26s │\n",
 			numW, fmt.Sprintf("%d/%d", i+1, len(acs)),
-			w, name, vcw, c.action.vcodec, acw, c.action.acodec, actionDesc(c.action))
+			padDisplay(name, w), vcw, c.action.vcodec, acw, c.action.acodec, actionDesc(c.action))
 		if afterRow != nil {
 			afterRow(c)
 		}
@@ -492,6 +492,57 @@ func digits(n int) int {
 		return 4
 	}
 	return 5
+}
+
+func runeWidth(r rune) int {
+	if r >= 0x1100 && r <= 0x115F ||
+		r == 0x2329 || r == 0x232A ||
+		r >= 0x2E80 && r <= 0x303E ||
+		r >= 0x3040 && r <= 0x33FF ||
+		r >= 0x3400 && r <= 0x4DBF ||
+		r >= 0x4E00 && r <= 0xA4CF ||
+		r >= 0xA960 && r <= 0xA97C ||
+		r >= 0xAC00 && r <= 0xD7AF ||
+		r >= 0xF900 && r <= 0xFAFF ||
+		r >= 0xFE10 && r <= 0xFE19 ||
+		r >= 0xFE30 && r <= 0xFE6F ||
+		r >= 0xFF01 && r <= 0xFF60 ||
+		r >= 0xFFE0 && r <= 0xFFE6 ||
+		r >= 0x1B000 && r <= 0x1B0FF ||
+		r >= 0x1B100 && r <= 0x1B12F ||
+		r >= 0x1F004 && r <= 0x1F9FF ||
+		r >= 0x20000 && r <= 0x2FFFF ||
+		r >= 0x30000 && r <= 0x3FFFF {
+		return 2
+	}
+	return 1
+}
+
+func displayWidth(s string) int {
+	w := 0
+	for _, r := range s {
+		w += runeWidth(r)
+	}
+	return w
+}
+
+func truncateDisplay(s string, maxWidth int) string {
+	w := 0
+	for i, r := range s {
+		rw := runeWidth(r)
+		if w+rw > maxWidth {
+			return s[:i]
+		}
+		w += rw
+	}
+	return s
+}
+
+func padDisplay(s string, width int) string {
+	if n := width - displayWidth(s); n > 0 {
+		return s + strings.Repeat(" ", n)
+	}
+	return s
 }
 
 func printDryRun(acs []actionCache, nameWidth int) {
@@ -820,8 +871,8 @@ func printTable(entries []*fileEntry, nameWidth int) {
 
 	for i, e := range entries {
 		name := e.Name
-		if len(name) > nameWidth {
-			name = name[:nameWidth-3] + "..."
+		if displayWidth(name) > nameWidth {
+			name = truncateDisplay(name, nameWidth-3) + "..."
 		}
 		idx := fmt.Sprintf("%d/%d", i+1, total)
 		speed := e.Speed
@@ -845,8 +896,8 @@ func printTable(entries []*fileEntry, nameWidth int) {
 			qsvStr = "Yes"
 		}
 
-		fmt.Printf("│ %-*s │ %-*s │ %-9s │ %-6s │ %-8s │ %-10s │ %-4s │\n",
-			numW, idx, nameWidth, name,
+		fmt.Printf("│ %-*s │ %s │ %-9s │ %-6s │ %-8s │ %-10s │ %-4s │\n",
+			numW, idx, padDisplay(name, nameWidth),
 			formatSize(e.Size), speed, tm, disp, qsvStr,
 		)
 	}
