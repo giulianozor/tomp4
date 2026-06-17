@@ -80,6 +80,7 @@ func main() {
 	recursive := flag.Bool("r", false, "recursively scan source directory")
 	clean := flag.Bool("c", false, "remove source files that already have a corresponding output file")
 	move := flag.Bool("m", false, "move valid files from source to output directory")
+	noQSVFallback := flag.Bool("no-qsv-fallback", false, "disable automatic fallback to software encoding when QSV fails")
 	flag.Parse()
 
 	signalCh := make(chan os.Signal, 1)
@@ -231,7 +232,7 @@ func main() {
 		if interrupted.Load() {
 			break
 		}
-		processFile(c.entry, c.action, c.outPath, entries, *keep, *move, nameWidth, tableLines)
+		processFile(c.entry, c.action, c.outPath, entries, *keep, *move, nameWidth, tableLines, *noQSVFallback)
 	}
 
 	if !useANSI {
@@ -508,53 +509,7 @@ func printDryRun(acs []actionCache, nameWidth int) {
 	})
 }
 
-func processFile(e *fileEntry, a action, outPath string, entries []*fileEntry, keep, move bool, nameWidth, tableLines int) {
-	if a.skip {
-		if move {
-			if _, err := os.Stat(outPath); os.IsNotExist(err) {
-				if err := os.Rename(e.Path, outPath); err == nil {
-					e.Status = "Moved"
-					e.Speed = "  --  "
-					e.Time = "  --  "
-					e.Progress = "  --  "
-					updateTable(entries, nameWidth, tableLines)
-					printFileStatus(e)
-					return
-				}
-				fmt.Fprintf(os.Stderr, "warning: failed to move %s: %v\n", e.Path, err)
-			}
-		}
-		e.Status = "Skipped"
-		e.Speed = "  --  "
-		e.Time = "  --  "
-		e.Progress = "  --  "
-		updateTable(entries, nameWidth, tableLines)
-		printFileStatus(e)
-		if !keep {
-			if err := os.Remove(e.Path); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: failed to remove %s: %v\n", e.Path, err)
-			}
-		}
-		return
-	}
-
-	if _, err := os.Stat(outPath); err == nil {
-		e.Status = "Exists"
-		e.Speed = "  --  "
-		e.Time = "  --  "
-		e.Progress = "  --  "
-		updateTable(entries, nameWidth, tableLines)
-		printFileStatus(e)
-		return
-	}
-
-	if interrupted.Load() {
-		e.Status = "Aborted"
-		updateTable(entries, nameWidth, tableLines)
-		printFileStatus(e)
-		return
-	}
-
+func runFFmpeg(e *fileEntry, a action, outPath string, entries []*fileEntry, nameWidth, tableLines int) bool {
 	args := []string{"-i", e.Path,
 		"-map", "0:v?", "-map", "0:a?", "-map", "0:s?",
 		"-c:v", a.vcodecArg, "-c:a", a.acodecArg,
@@ -565,18 +520,12 @@ func processFile(e *fileEntry, a action, outPath string, entries []*fileEntry, k
 	cmd := exec.Command("ffmpeg", args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		e.Status = "Failed"
-		updateTable(entries, nameWidth, tableLines)
-		printFileStatus(e)
-		return
+		return false
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		stdout.Close()
-		e.Status = "Failed"
-		updateTable(entries, nameWidth, tableLines)
-		printFileStatus(e)
-		return
+		return false
 	}
 
 	cmdMu.Lock()
@@ -589,10 +538,7 @@ func processFile(e *fileEntry, a action, outPath string, entries []*fileEntry, k
 		cmdMu.Unlock()
 		stdout.Close()
 		stderr.Close()
-		e.Status = "Failed"
-		updateTable(entries, nameWidth, tableLines)
-		printFileStatus(e)
-		return
+		return false
 	}
 
 	e.Status = "Encoding"
@@ -671,7 +617,58 @@ func processFile(e *fileEntry, a action, outPath string, entries []*fileEntry, k
 	currentCmd = nil
 	cmdMu.Unlock()
 
-	if cmd.ProcessState.Success() {
+	return cmd.ProcessState.Success()
+}
+
+func processFile(e *fileEntry, a action, outPath string, entries []*fileEntry, keep, move bool, nameWidth, tableLines int, noQSVFallback bool) {
+	if a.skip {
+		if move {
+			if _, err := os.Stat(outPath); os.IsNotExist(err) {
+				if err := os.Rename(e.Path, outPath); err == nil {
+					e.Status = "Moved"
+					e.Speed = "  --  "
+					e.Time = "  --  "
+					e.Progress = "  --  "
+					updateTable(entries, nameWidth, tableLines)
+					printFileStatus(e)
+					return
+				}
+				fmt.Fprintf(os.Stderr, "warning: failed to move %s: %v\n", e.Path, err)
+			}
+		}
+		e.Status = "Skipped"
+		e.Speed = "  --  "
+		e.Time = "  --  "
+		e.Progress = "  --  "
+		updateTable(entries, nameWidth, tableLines)
+		printFileStatus(e)
+		if !keep {
+			if err := os.Remove(e.Path); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to remove %s: %v\n", e.Path, err)
+			}
+		}
+		return
+	}
+
+	if _, err := os.Stat(outPath); err == nil {
+		e.Status = "Exists"
+		e.Speed = "  --  "
+		e.Time = "  --  "
+		e.Progress = "  --  "
+		updateTable(entries, nameWidth, tableLines)
+		printFileStatus(e)
+		return
+	}
+
+	if interrupted.Load() {
+		e.Status = "Aborted"
+		updateTable(entries, nameWidth, tableLines)
+		printFileStatus(e)
+		return
+	}
+
+	ok := runFFmpeg(e, a, outPath, entries, nameWidth, tableLines)
+	if ok {
 		e.Status = "Done"
 		e.Time = fmtDuration(e.Duration)
 		e.Progress = "100%"
@@ -700,6 +697,40 @@ func processFile(e *fileEntry, a action, outPath string, entries []*fileEntry, k
 		updateTable(entries, nameWidth, tableLines)
 		printFileStatus(e)
 		return
+	}
+
+	if a.vcodecArg == "h264_qsv" && !noQSVFallback {
+		if _, err := os.Stat(outPath); err == nil {
+			os.Remove(outPath)
+		}
+		a.vcodecArg = "libx264"
+		if runFFmpeg(e, a, outPath, entries, nameWidth, tableLines) {
+			e.Status = "Done"
+			e.Time = fmtDuration(e.Duration)
+			e.Progress = "100%"
+			e.Speed = "  --  "
+			updateTable(entries, nameWidth, tableLines)
+			printFileStatus(e)
+			if !keep {
+				if err := os.Remove(e.Path); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: failed to remove %s: %v\n", e.Path, err)
+				}
+			}
+			return
+		}
+
+		if interrupted.Load() {
+			if _, err := os.Stat(outPath); err == nil {
+				os.Remove(outPath)
+			}
+			e.Status = "Killed"
+			e.Progress = " ERR "
+			e.Speed = "  --  "
+			e.Time = "  --  "
+			updateTable(entries, nameWidth, tableLines)
+			printFileStatus(e)
+			return
+		}
 	}
 
 	if _, err := os.Stat(outPath); err == nil {
