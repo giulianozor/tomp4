@@ -260,7 +260,7 @@ func TestFindVideoFilesNonRecursiveExcludesDstDir(t *testing.T) {
 }
 
 func TestVideoExts(t *testing.T) {
-	expectedExts := []string{".mp4", ".avi", ".mkv", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".ts", ".mts", ".m2ts", ".3gp", ".ogv"}
+	expectedExts := []string{".mp4", ".avi", ".mkv", ".mov", ".wmv", ".snd", ".rmvb", ".flv", ".webm", ".m4v", ".ts", ".mts", ".m2ts", ".3gp", ".ogv"}
 	for _, ext := range expectedExts {
 		if !videoExts[ext] {
 			t.Errorf("expected %q to be in videoExts", ext)
