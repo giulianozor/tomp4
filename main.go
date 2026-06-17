@@ -40,6 +40,7 @@ type fileEntry struct {
 	Time     string
 	Progress string
 	Duration float64
+	Qsv      bool
 }
 
 var (
@@ -241,7 +242,7 @@ func main() {
 	fmt.Println()
 }
 
-const fixedTableOverhead = 51 // fixed col widths (10+8+10+12) + #/File padding (4) + border chars (7)
+const fixedTableOverhead = 58 // fixed col widths (11+8+10+12+6) + #/File padding (4) + border chars (7)
 
 func calcNameWidth(total int) int {
 	numW := digits(total)*2 + 1
@@ -621,6 +622,7 @@ func runFFmpeg(e *fileEntry, a action, outPath string, entries []*fileEntry, nam
 }
 
 func processFile(e *fileEntry, a action, outPath string, entries []*fileEntry, keep, move bool, nameWidth, tableLines int, noQSVFallback bool) {
+	e.Qsv = a.vcodecArg == "h264_qsv"
 	if a.skip {
 		if move {
 			if _, err := os.Stat(outPath); os.IsNotExist(err) {
@@ -704,6 +706,7 @@ func processFile(e *fileEntry, a action, outPath string, entries []*fileEntry, k
 			os.Remove(outPath)
 		}
 		a.vcodecArg = "libx264"
+		e.Qsv = false
 		if runFFmpeg(e, a, outPath, entries, nameWidth, tableLines) {
 			e.Status = "Done"
 			e.Time = fmtDuration(e.Duration)
@@ -780,33 +783,36 @@ func printTable(entries []*fileEntry, nameWidth int) {
 
 	numW := digits(len(entries))*2 + 1
 
-	top := fmt.Sprintf("┌%s┬%s┬%s┬%s┬%s┬%s┐",
+	top := fmt.Sprintf("┌%s┬%s┬%s┬%s┬%s┬%s┬%s┐",
 		strings.Repeat("─", numW+2),
 		strings.Repeat("─", nameWidth+2),
-		strings.Repeat("─", 10),
+		strings.Repeat("─", 11),
 		strings.Repeat("─", 8),
 		strings.Repeat("─", 10),
 		strings.Repeat("─", 12),
+		strings.Repeat("─", 6),
 	)
-	mid := fmt.Sprintf("├%s┼%s┼%s┼%s┼%s┼%s┤",
+	mid := fmt.Sprintf("├%s┼%s┼%s┼%s┼%s┼%s┼%s┤",
 		strings.Repeat("─", numW+2),
 		strings.Repeat("─", nameWidth+2),
-		strings.Repeat("─", 10),
+		strings.Repeat("─", 11),
 		strings.Repeat("─", 8),
 		strings.Repeat("─", 10),
 		strings.Repeat("─", 12),
+		strings.Repeat("─", 6),
 	)
-	bot := fmt.Sprintf("└%s┴%s┴%s┴%s┴%s┴%s┘",
+	bot := fmt.Sprintf("└%s┴%s┴%s┴%s┴%s┴%s┴%s┘",
 		strings.Repeat("─", numW+2),
 		strings.Repeat("─", nameWidth+2),
-		strings.Repeat("─", 10),
+		strings.Repeat("─", 11),
 		strings.Repeat("─", 8),
 		strings.Repeat("─", 10),
 		strings.Repeat("─", 12),
+		strings.Repeat("─", 6),
 	)
 
-	hdr := fmt.Sprintf("│ %-*s │ %-*s │ %-8s │ %-6s │ %-8s │ %-10s │",
-		numW, "#", nameWidth, "File", "Size", "Speed", "Time", "Status")
+	hdr := fmt.Sprintf("│ %-*s │ %-*s │ %-9s │ %-6s │ %-8s │ %-10s │ %-4s │",
+		numW, "#", nameWidth, "File", "Size", "Speed", "Time", "Status", "QSV")
 
 	fmt.Println(top)
 	fmt.Println(hdr)
@@ -834,10 +840,14 @@ func printTable(entries []*fileEntry, nameWidth int) {
 		if e.Status == "Encoding" {
 			disp = prog
 		}
+		qsvStr := "No "
+		if e.Qsv {
+			qsvStr = "Yes"
+		}
 
-		fmt.Printf("│ %-*s │ %-*s │ %-8s │ %-6s │ %-8s │ %-10s │\n",
+		fmt.Printf("│ %-*s │ %-*s │ %-9s │ %-6s │ %-8s │ %-10s │ %-4s │\n",
 			numW, idx, nameWidth, name,
-			formatSize(e.Size), speed, tm, disp,
+			formatSize(e.Size), speed, tm, disp, qsvStr,
 		)
 	}
 
