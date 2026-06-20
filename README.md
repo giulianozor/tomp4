@@ -4,7 +4,7 @@ Batch convert video files to MP4 (H.264/AAC) using ffmpeg.
 
 ## Features
 
-- Scans a directory for video files (mp4, avi, mkv, mov, wmv, flv, webm, m4v, ts, mts, m2ts, 3gp, ogv) — optionally recursive with `-r`
+- Scans a directory for video files (mp4, avi, mkv, mov, wmv, flv, webm, m4v, ts, mts, m2ts, 3gp, ogv, webp) — optionally recursive with `-r`
 - Skips files already in valid MP4/H.264 format
 - Preserves compatible audio (AAC, AC3) and subtitle streams
 - Re-encodes incompatible audio to AAC

@@ -55,7 +55,7 @@ var (
 		".wmv": true, ".snd": true, ".rm": true, ".rmvb": true, ".flv": true, ".webm": true, ".m4v": true,
 		".mpg": true, ".mpeg": true,
 		".ts": true, ".mts": true, ".m2ts": true, ".3gp": true,
-		".ogv": true,
+		".ogv": true, ".webp": true,
 	}
 	termWidth int
 )
