@@ -56,6 +56,7 @@ var (
 		".mpg": true, ".mpeg": true,
 		".ts": true, ".mts": true, ".m2ts": true, ".3gp": true,
 		".ogv": true, ".webp": true,
+		".vob": true,
 	}
 	termWidth int
 )
