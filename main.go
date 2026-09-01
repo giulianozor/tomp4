@@ -50,7 +50,7 @@ var (
 )
 
 var (
-	videoExts   = map[string]bool{
+	videoExts = map[string]bool{
 		".mp4": true, ".avi": true, ".mkv": true, ".mov": true,
 		".wmv": true, ".snd": true, ".rm": true, ".rmvb": true, ".flv": true, ".webm": true, ".m4v": true,
 		".mpg": true, ".mpeg": true,
@@ -141,12 +141,17 @@ func main() {
 		return
 	}
 
-	if *clean {
+	// Clean only runs during real processing. In info (-i) and dry-run (-n)
+	// modes, which exit before converting, we must never delete source files.
+	if *clean && !*info && !*dryRun {
 		var remaining []*fileEntry
 		for _, e := range entries {
 			outName := strings.TrimSuffix(e.Name, filepath.Ext(e.Name)) + ".mp4"
 			outPath := filepath.Join(dstDir, outName)
-			if _, err := os.Stat(outPath); err == nil {
+			// Only clean when the counterpart output actually exists and is
+			// non-empty; an empty/partial output should never cause the
+			// source to be deleted.
+			if fi, err := os.Stat(outPath); err == nil && fi.Size() > 0 {
 				if err := os.Remove(e.Path); err != nil {
 					fmt.Fprintf(os.Stderr, "warning: failed to remove %s: %v\n", e.Path, err)
 				}
@@ -214,9 +219,14 @@ func main() {
 		fmt.Print("Proceed? [Y/n] ")
 		var response string
 		if _, err := fmt.Scanln(&response); err != nil {
-			fmt.Println("Aborted.")
-			return
+			// On empty input (Enter) Scanln returns io.EOF; treat it as the
+			// default "yes". Only a real read error should abort.
+			if err != io.EOF {
+				fmt.Println("Aborted.")
+				return
+			}
 		}
+		response = strings.TrimSpace(response)
 		if response != "y" && response != "Y" && response != "" {
 			fmt.Println("Aborted.")
 			return
@@ -674,12 +684,39 @@ func runFFmpeg(e *fileEntry, a action, outPath string, entries []*fileEntry, nam
 	return cmd.ProcessState.Success()
 }
 
+func moveFile(src, dst string) error {
+	err := os.Rename(src, dst)
+	if err == nil {
+		return nil
+	}
+	// os.Rename fails across filesystems (EXDEV). Fall back to copy+delete.
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		os.Remove(dst)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		os.Remove(dst)
+		return err
+	}
+	return os.Remove(src)
+}
+
 func processFile(e *fileEntry, a action, outPath string, entries []*fileEntry, keep, move bool, nameWidth, tableLines int, noQSVFallback bool) {
 	e.Qsv = a.vcodecArg == "h264_qsv"
 	if a.skip {
 		if move {
 			if _, err := os.Stat(outPath); os.IsNotExist(err) {
-				if err := os.Rename(e.Path, outPath); err == nil {
+				if err := moveFile(e.Path, outPath); err == nil {
 					e.Status = "Moved"
 					e.Speed = "  --  "
 					e.Time = "  --  "
@@ -687,8 +724,17 @@ func processFile(e *fileEntry, a action, outPath string, entries []*fileEntry, k
 					updateTable(entries, nameWidth, tableLines)
 					printFileStatus(e)
 					return
+				} else {
+					fmt.Fprintf(os.Stderr, "warning: failed to move %s: %v\n", e.Path, err)
+					// Never delete the source when a move failed.
+					e.Status = "Move Failed"
+					e.Speed = "  --  "
+					e.Time = "  --  "
+					e.Progress = "  --  "
+					updateTable(entries, nameWidth, tableLines)
+					printFileStatus(e)
+					return
 				}
-				fmt.Fprintf(os.Stderr, "warning: failed to move %s: %v\n", e.Path, err)
 			}
 		}
 		e.Status = "Skipped"
@@ -756,7 +802,9 @@ func processFile(e *fileEntry, a action, outPath string, entries []*fileEntry, k
 
 	if a.vcodecArg == "h264_qsv" && !noQSVFallback {
 		if _, err := os.Stat(outPath); err == nil {
-			os.Remove(outPath)
+			if err := os.Remove(outPath); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to remove partial output %s: %v\n", outPath, err)
+			}
 		}
 		a.vcodecArg = "libx264"
 		e.Qsv = false
@@ -777,7 +825,9 @@ func processFile(e *fileEntry, a action, outPath string, entries []*fileEntry, k
 
 		if interrupted.Load() {
 			if _, err := os.Stat(outPath); err == nil {
-				os.Remove(outPath)
+				if err := os.Remove(outPath); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: failed to remove partial output %s: %v\n", outPath, err)
+				}
 			}
 			e.Status = "Killed"
 			e.Progress = " ERR "

@@ -291,3 +291,28 @@ func TestUseANSI(t *testing.T) {
 		t.Log("ANSI escape codes disabled")
 	}
 }
+
+func TestMoveFile(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.txt")
+	dst := filepath.Join(dir, "dst.txt")
+
+	content := []byte("hello world")
+	if err := os.WriteFile(src, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := moveFile(src, dst); err != nil {
+		t.Fatalf("moveFile() error = %v", err)
+	}
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Error("source should not exist after move")
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(content) {
+		t.Errorf("moved content = %q, want %q", got, content)
+	}
+}
