@@ -6,7 +6,9 @@ Batch convert video files to MP4 (H.264/AAC) using ffmpeg.
 
 - Scans a directory for video files (mp4, avi, mkv, mov, wmv, flv, webm, m4v, ts, mts, m2ts, 3gp, ogv, webp) — optionally recursive with `-r`
 - Skips files already in valid MP4/H.264 format
-- Preserves compatible audio (AAC, AC3) and subtitle streams
+- Preserves compatible audio (AAC, AC3) and MP4-compatible subtitles
+- Converts text subtitles (SubRip, ASS/SSA, WebVTT) to MP4 `mov_text`
+- Drops bitmap subtitles (PGS/DVD/DVB) that MP4 cannot store, with a warning
 - Re-encodes incompatible audio to AAC
 - Real-time progress table with per-file status
 - Dry-run mode to preview commands
@@ -88,9 +90,12 @@ For each video file found:
 3. Otherwise, **ffmpeg** converts the file:
    - Video: H.264 (`libx264` or `h264_qsv`), or stream-copied if already H.264
    - Audio: AAC, or stream-copied if already AAC/AC3
-   - Subtitles: stream-copied
+   - Subtitles: stream-copied when MP4 accepts them as-is (`mov_text`, `ttml`),
+     converted to `mov_text` for text formats (SubRip, ASS/SSA, WebVTT), and
+     dropped with a warning for bitmap formats (PGS/DVD/DVB) that MP4 cannot store
    - Metadata and chapters are preserved
 4. On success, the original is removed (unless `-k` is set)
-5. On failure, the partial output file is deleted
+5. On failure, the partial output file is deleted and ffmpeg's error is printed once the run finishes
 6. With `-c`, source files whose `.mp4` output already exists are removed before any conversion
 7. With `-m`, files already in valid MP4 format are moved (renamed) to the output directory instead of being skipped
+8. The process exits with a non-zero status if any file failed

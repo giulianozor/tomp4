@@ -1,8 +1,10 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -27,6 +29,165 @@ func TestDigits(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("digits(%d) = %d, want %d", tt.n, got, tt.want)
 		}
+	}
+}
+
+func TestPlanSubtitles(t *testing.T) {
+	tests := []struct {
+		name     string
+		subs     []string
+		wantMaps []string
+		wantArg  string
+		wantDrop []string
+	}{
+		{"no subtitles", nil, nil, "", nil},
+		{"mov_text copied", []string{"mov_text"}, []string{"0:s:0?"}, "copy", nil},
+		{"ttml copied", []string{"ttml"}, []string{"0:s:0?"}, "copy", nil},
+		{"subrip transcoded", []string{"subrip"}, []string{"0:s:0?"}, "mov_text", nil},
+		{"ass transcoded", []string{"ass"}, []string{"0:s:0?"}, "mov_text", nil},
+		{"ssa transcoded", []string{"ssa"}, []string{"0:s:0?"}, "mov_text", nil},
+		{"webvtt transcoded", []string{"webvtt"}, []string{"0:s:0?"}, "mov_text", nil},
+		{
+			"bitmap dropped",
+			[]string{"hdmv_pgs_subtitle"},
+			nil, "",
+			[]string{"hdmv_pgs_subtitle"},
+		},
+		{
+			"bitmap dropped, text kept by its ordinal",
+			[]string{"hdmv_pgs_subtitle", "subrip"},
+			[]string{"0:s:1?"}, "mov_text",
+			[]string{"hdmv_pgs_subtitle"},
+		},
+		{
+			"mixed text forces transcode",
+			[]string{"mov_text", "subrip"},
+			[]string{"0:s:0?", "0:s:1?"}, "mov_text",
+			nil,
+		},
+		{
+			"all copyable stays copy",
+			[]string{"mov_text", "ttml"},
+			[]string{"0:s:0?", "0:s:1?"}, "copy",
+			nil,
+		},
+		{
+			"multiple subtitles, middle one dropped",
+			[]string{"subrip", "dvd_subtitle", "ass"},
+			[]string{"0:s:0?", "0:s:2?"}, "mov_text",
+			[]string{"dvd_subtitle"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			maps, arg, dropped := planSubtitles(tt.subs)
+			if !equalStrings(maps, tt.wantMaps) {
+				t.Errorf("maps = %v, want %v", maps, tt.wantMaps)
+			}
+			if arg != tt.wantArg {
+				t.Errorf("arg = %q, want %q", arg, tt.wantArg)
+			}
+			if !equalStrings(dropped, tt.wantDrop) {
+				t.Errorf("dropped = %v, want %v", dropped, tt.wantDrop)
+			}
+		})
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestFFmpegArgs(t *testing.T) {
+	tests := []struct {
+		name string
+		a    action
+		want []string
+	}{
+		{
+			"qsv with transcoded subtitles",
+			action{
+				vcodecArg: "h264_qsv", acodecArg: "copy",
+				subMaps: []string{"0:s:0?"}, subArg: "mov_text",
+			},
+			[]string{
+				"-i", "in.mkv", "-map", "0:v?", "-map", "0:a?",
+				"-map", "0:s:0?",
+				"-c:v", "h264_qsv", "-c:a", "copy", "-c:s", "mov_text",
+				"-map_metadata", "0", "-map_chapters", "0",
+				"-progress", "pipe:1", "-nostats", "-y", "out.mp4",
+			},
+		},
+		{
+			"no subtitle streams omits -map and -c:s",
+			action{vcodecArg: "libx264", acodecArg: "aac"},
+			[]string{
+				"-i", "in.mkv", "-map", "0:v?", "-map", "0:a?",
+				"-c:v", "libx264", "-c:a", "aac",
+				"-map_metadata", "0", "-map_chapters", "0",
+				"-progress", "pipe:1", "-nostats", "-y", "out.mp4",
+			},
+		},
+		{
+			"copied subtitles",
+			action{
+				vcodecArg: "copy", acodecArg: "copy",
+				subMaps: []string{"0:s:0?", "0:s:2?"}, subArg: "copy",
+			},
+			[]string{
+				"-i", "in.mkv", "-map", "0:v?", "-map", "0:a?",
+				"-map", "0:s:0?", "-map", "0:s:2?",
+				"-c:v", "copy", "-c:a", "copy", "-c:s", "copy",
+				"-map_metadata", "0", "-map_chapters", "0",
+				"-progress", "pipe:1", "-nostats", "-y", "out.mp4",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ffmpegArgs("in.mkv", "out.mp4", tt.a)
+			if !equalStrings(got, tt.want) {
+				t.Errorf("ffmpegArgs() =\n%v\nwant\n%v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStderrTail(t *testing.T) {
+	tail := &stderrTail{max: 64}
+	io.WriteString(tail, "line one\nline two\n")
+	if got := tail.String(); got != "line one\nline two" {
+		t.Errorf("String() = %q, want %q", got, "line one\nline two")
+	}
+
+	// Overflow must keep the newest complete lines, not the oldest.
+	big := strings.Repeat("x", 200) + "\nlatest failure\n"
+	io.WriteString(tail, big)
+	got := tail.String()
+	if !strings.HasSuffix(got, "latest failure") {
+		t.Errorf("String() = %q, want it to end with the newest line", got)
+	}
+	if strings.Contains(got, "line one") {
+		t.Errorf("String() = %q, want old lines evicted", got)
+	}
+
+	empty := &stderrTail{max: 64}
+	if got := empty.String(); got != "" {
+		t.Errorf("empty String() = %q, want %q", got, "")
+	}
+}
+
+func TestIndentLines(t *testing.T) {
+	if got := indentLines("a\nb"); got != "  a\n  b" {
+		t.Errorf("indentLines() = %q, want %q", got, "  a\n  b")
 	}
 }
 

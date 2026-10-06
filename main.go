@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -41,6 +42,7 @@ type fileEntry struct {
 	Progress string
 	Duration float64
 	Qsv      bool
+	Log      string
 }
 
 var (
@@ -172,6 +174,7 @@ func main() {
 
 	nameWidth := calcNameWidth(len(entries))
 	acs := computeActions(entries, dstDir, *qsv)
+	warnDroppedSubs(acs)
 
 	if *info {
 		printInfoTable(acs, nameWidth)
@@ -252,6 +255,43 @@ func main() {
 		printTable(entries, nameWidth)
 	}
 	fmt.Println()
+
+	failed := 0
+	// Every file on the same machine fails QSV for the same reason, so show
+	// the detailed log only once instead of repeating it per file.
+	qsvReasonShown := false
+	for _, e := range entries {
+		if e.Status == "Failed" || e.Status == "Move Failed" {
+			failed++
+		}
+		if e.Status == "Failed" {
+			fmt.Fprintf(os.Stderr, "error: %s: ffmpeg failed\n", e.Name)
+			if e.Log != "" {
+				fmt.Fprintln(os.Stderr, indentLines(e.Log))
+			}
+		} else if e.Log != "" {
+			fmt.Fprintf(os.Stderr, "warning: %s: QSV encode failed, retried with software encoder\n", e.Name)
+			if !qsvReasonShown {
+				qsvReasonShown = true
+				fmt.Fprintln(os.Stderr, indentLines(e.Log))
+			}
+		}
+	}
+	if failed > 0 || interrupted.Load() {
+		os.Exit(1)
+	}
+}
+
+// warnDroppedSubs reports subtitle streams that cannot be stored in MP4 so
+// their absence from the output is never silent.
+func warnDroppedSubs(acs []actionCache) {
+	for _, c := range acs {
+		if len(c.action.dropped) == 0 {
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "warning: %s: dropping subtitle stream(s) not supported by MP4: %s\n",
+			c.entry.Name, strings.Join(c.action.dropped, ", "))
+	}
 }
 
 const fixedTableOverhead = 59 // fixed col widths (11+8+10+12+6) + #/File padding (4) + border chars (8)
@@ -327,28 +367,33 @@ func probeDuration(path string) float64 {
 	return d
 }
 
-func probeCodecs(path string) (string, []string) {
+func probeCodecs(path string) (string, []string, []string) {
 	cmd := exec.Command("ffprobe", "-v", "quiet", "-print_format", "json",
 		"-show_streams", path)
 	out, err := cmd.Output()
 	if err != nil {
-		return "", nil
+		return "", nil, nil
 	}
 	var p ffprobeOut
 	if err := json.Unmarshal(out, &p); err != nil {
-		return "", nil
+		return "", nil, nil
 	}
 	var vc string
 	var acs []string
+	var scs []string
 	for _, s := range p.Streams {
-		if s.CodecType == "video" && vc == "" {
-			vc = s.CodecName
-		}
-		if s.CodecType == "audio" {
+		switch s.CodecType {
+		case "video":
+			if vc == "" {
+				vc = s.CodecName
+			}
+		case "audio":
 			acs = append(acs, s.CodecName)
+		case "subtitle":
+			scs = append(scs, s.CodecName)
 		}
 	}
-	return vc, acs
+	return vc, acs, scs
 }
 
 type action struct {
@@ -357,11 +402,58 @@ type action struct {
 	acodec    string
 	vcodecArg string
 	acodecArg string
+	subMaps   []string
+	subArg    string
+	dropped   []string
+}
+
+// mp4SubCopy holds subtitle codecs the MP4 muxer accepts unchanged.
+var mp4SubCopy = map[string]bool{
+	"mov_text": true,
+	"ttml":     true,
+}
+
+// mp4SubTranscode holds text subtitle codecs ffmpeg can convert to mov_text,
+// the timed-text codec MP4 stores. Anything else (bitmap subtitles such as
+// PGS/DVD/DVB) has no representation in MP4 and must be dropped instead of
+// making the whole conversion fail.
+var mp4SubTranscode = map[string]bool{
+	"mov_text": true,
+	"subrip":   true,
+	"ass":      true,
+	"ssa":      true,
+	"webvtt":   true,
+	"text":     true,
+}
+
+// planSubtitles decides which subtitle streams can be carried into an MP4.
+// It returns the -map operands for the streams to keep (indexed by position
+// among the source's subtitle streams), the -c:s value (empty when no stream
+// is kept), and the codecs of the streams that have to be dropped.
+func planSubtitles(subCodecs []string) (maps []string, arg string, dropped []string) {
+	needTranscode := false
+	for i, sc := range subCodecs {
+		if !mp4SubCopy[sc] && !mp4SubTranscode[sc] {
+			dropped = append(dropped, sc)
+			continue
+		}
+		maps = append(maps, fmt.Sprintf("0:s:%d?", i))
+		if !mp4SubCopy[sc] {
+			needTranscode = true
+		}
+	}
+	if len(maps) == 0 {
+		return nil, "", dropped
+	}
+	if needTranscode {
+		return maps, "mov_text", dropped
+	}
+	return maps, "copy", dropped
 }
 
 func getAction(path string, qsv bool) action {
 	ext := strings.ToLower(filepath.Ext(path))
-	vcodec, acodecs := probeCodecs(path)
+	vcodec, acodecs, subCodecs := probeCodecs(path)
 
 	allCopyable := true
 	for _, ac := range acodecs {
@@ -391,7 +483,24 @@ func getAction(path string, qsv bool) action {
 		a.acodecArg = "aac"
 	}
 
+	a.subMaps, a.subArg, a.dropped = planSubtitles(subCodecs)
+
 	return a
+}
+
+// ffmpegArgs builds the ffmpeg argv shared by the dry run and the real run.
+func ffmpegArgs(inPath, outPath string, a action) []string {
+	args := []string{"-i", inPath, "-map", "0:v?", "-map", "0:a?"}
+	for _, m := range a.subMaps {
+		args = append(args, "-map", m)
+	}
+	args = append(args, "-c:v", a.vcodecArg, "-c:a", a.acodecArg)
+	if a.subArg != "" {
+		args = append(args, "-c:s", a.subArg)
+	}
+	args = append(args, "-map_metadata", "0", "-map_chapters", "0",
+		"-progress", "pipe:1", "-nostats", "-y", outPath)
+	return args
 }
 
 func actionDesc(a action) string {
@@ -560,12 +669,7 @@ func padDisplay(s string, width int) string {
 func printDryRun(acs []actionCache, nameWidth int) {
 	actionTable(acs, nameWidth, func(c actionCache) {
 		if !c.action.skip {
-			args := []string{"-i", c.entry.Path,
-				"-map", "0:v?", "-map", "0:a?", "-map", "0:s?",
-				"-c:v", c.action.vcodecArg, "-c:a", c.action.acodecArg,
-				"-c:s", "copy",
-				"-map_metadata", "0", "-map_chapters", "0",
-				"-progress", "pipe:1", "-nostats", "-y", c.outPath}
+			args := ffmpegArgs(c.entry.Path, c.outPath, c.action)
 			fmt.Printf("  ffmpeg %s\n", strings.Join(args, " "))
 		} else {
 			fmt.Println("  (no conversion needed)")
@@ -573,23 +677,62 @@ func printDryRun(acs []actionCache, nameWidth int) {
 	})
 }
 
-func runFFmpeg(e *fileEntry, a action, outPath string, entries []*fileEntry, nameWidth, tableLines int) bool {
-	args := []string{"-i", e.Path,
-		"-map", "0:v?", "-map", "0:a?", "-map", "0:s?",
-		"-c:v", a.vcodecArg, "-c:a", a.acodecArg,
-		"-c:s", "copy",
-		"-map_metadata", "0", "-map_chapters", "0",
-		"-progress", "pipe:1", "-nostats", "-y", outPath}
+// stderrTail keeps the tail of ffmpeg's stderr so the reason a conversion
+// failed can be reported once the live progress table is done drawing.
+type stderrTail struct {
+	mu  sync.Mutex
+	buf []byte
+	max int
+}
+
+func (t *stderrTail) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.buf = append(t.buf, p...)
+	if len(t.buf) > t.max {
+		t.buf = t.buf[len(t.buf)-t.max:]
+		if i := bytes.IndexByte(t.buf, '\n'); i >= 0 && i+1 < len(t.buf) {
+			t.buf = t.buf[i+1:]
+		}
+	}
+	return len(p), nil
+}
+
+func (t *stderrTail) String() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	s := strings.TrimRight(string(t.buf), "\n")
+	if s == "" {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	const maxLines = 20
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+	}
+	return strings.Join(lines, "\n")
+}
+
+func indentLines(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		lines[i] = "  " + l
+	}
+	return strings.Join(lines, "\n")
+}
+
+func runFFmpeg(e *fileEntry, a action, outPath string, entries []*fileEntry, nameWidth, tableLines int) (bool, string) {
+	args := ffmpegArgs(e.Path, outPath, a)
 
 	cmd := exec.Command("ffmpeg", args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return false
+		return false, ""
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		stdout.Close()
-		return false
+		return false, ""
 	}
 
 	cmdMu.Lock()
@@ -602,7 +745,7 @@ func runFFmpeg(e *fileEntry, a action, outPath string, entries []*fileEntry, nam
 		cmdMu.Unlock()
 		stdout.Close()
 		stderr.Close()
-		return false
+		return false, ""
 	}
 
 	e.Status = "Encoding"
@@ -637,7 +780,8 @@ func runFFmpeg(e *fileEntry, a action, outPath string, entries []*fileEntry, nam
 		}
 	}()
 
-	go io.Copy(io.Discard, stderr)
+	tail := &stderrTail{max: 8192}
+	go io.Copy(tail, stderr)
 
 	for vals := range progCh {
 		if time.Since(lastUpdate) < 200*time.Millisecond {
@@ -681,7 +825,7 @@ func runFFmpeg(e *fileEntry, a action, outPath string, entries []*fileEntry, nam
 	currentCmd = nil
 	cmdMu.Unlock()
 
-	return cmd.ProcessState.Success()
+	return cmd.ProcessState.Success(), tail.String()
 }
 
 func moveFile(src, dst string) error {
@@ -768,7 +912,7 @@ func processFile(e *fileEntry, a action, outPath string, entries []*fileEntry, k
 		return
 	}
 
-	ok := runFFmpeg(e, a, outPath, entries, nameWidth, tableLines)
+	ok, runLog := runFFmpeg(e, a, outPath, entries, nameWidth, tableLines)
 	if ok {
 		e.Status = "Done"
 		e.Time = fmtDuration(e.Duration)
@@ -808,7 +952,9 @@ func processFile(e *fileEntry, a action, outPath string, entries []*fileEntry, k
 		}
 		a.vcodecArg = "libx264"
 		e.Qsv = false
-		if runFFmpeg(e, a, outPath, entries, nameWidth, tableLines) {
+		okFallback, fallbackLog := runFFmpeg(e, a, outPath, entries, nameWidth, tableLines)
+		if okFallback {
+			e.Log = runLog
 			e.Status = "Done"
 			e.Time = fmtDuration(e.Duration)
 			e.Progress = "100%"
@@ -822,6 +968,7 @@ func processFile(e *fileEntry, a action, outPath string, entries []*fileEntry, k
 			}
 			return
 		}
+		runLog = fallbackLog
 
 		if interrupted.Load() {
 			if _, err := os.Stat(outPath); err == nil {
@@ -845,6 +992,7 @@ func processFile(e *fileEntry, a action, outPath string, entries []*fileEntry, k
 		}
 	}
 	e.Status = "Failed"
+	e.Log = runLog
 	e.Progress = " ERR "
 	e.Speed = "  --  "
 	e.Time = "  --  "
